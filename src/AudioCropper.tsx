@@ -1,8 +1,27 @@
+import {
+  AudioOutlined,
+  DownloadOutlined,
+  InboxOutlined,
+} from '@ant-design/icons';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { toBlobURL } from '@ffmpeg/util';
+import {
+  Button,
+  Card,
+  Col,
+  Row,
+  Slider,
+  Space,
+  Typography,
+  Upload,
+  message,
+} from 'antd';
+import type { RcFile } from 'antd/es/upload';
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
-import { useDropzone } from 'react-dropzone';
+
+const { Dragger } = Upload;
+const { Title, Text } = Typography;
 
 interface AudioCropperProps {
   maxFileSize?: number;
@@ -31,24 +50,21 @@ const AudioCropper: React.FC<AudioCropperProps> = ({
   const ffmpegRef = useRef<FFmpeg | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
-  // 初始化 FFmpeg
+  // 初始化 FFmpeg（之前的代码保持不变）
   useEffect(() => {
     const loadFFmpeg = async () => {
       try {
         const ffmpeg = new FFmpeg();
         const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.4/dist/esm';
 
-        // 配置日志
         ffmpeg.on('log', ({ message }) => {
           console.log('FFmpeg log:', message);
         });
 
-        // 配置进度
         ffmpeg.on('progress', ({ progress }) => {
           console.log('FFmpeg progress:', progress);
         });
 
-        // 加载 CoreWasm 文件
         await ffmpeg.load({
           coreURL: await toBlobURL(
             `${baseURL}/ffmpeg-core.js`,
@@ -64,41 +80,36 @@ const AudioCropper: React.FC<AudioCropperProps> = ({
         setIsFFmpegLoaded(true);
       } catch (error) {
         console.error('FFmpeg 加载失败:', error);
-        alert('FFmpeg 初始化错误，音频裁剪功能可能不可用');
+        message.error('FFmpeg 初始化错误，音频裁剪功能可能不可用');
       }
     };
 
     loadFFmpeg();
   }, []);
 
-  // 文件拖拽处理
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    accept: {
-      'audio/*': ['.mp3', '.wav', '.ogg', '.m4a'],
-    },
-    onDrop: (acceptedFiles) => {
-      const file = acceptedFiles[0];
-      if (file.size > maxFileSize) {
-        alert(`文件大小不能超过 ${maxFileSize / 1024 / 1024}MB`);
-        return;
-      }
+  // 文件上传处理
+  const handleFileUpload = (file: RcFile) => {
+    if (file.size > maxFileSize) {
+      message.error(`文件大小不能超过 ${maxFileSize / 1024 / 1024}MB`);
+      return false;
+    }
 
-      const url = URL.createObjectURL(file);
-      setAudioFile({ file, url, duration: 0 });
+    const url = URL.createObjectURL(file);
+    setAudioFile({ file, url, duration: 0 });
 
-      // 加载音频元数据获取时长
-      const audio = new Audio(url);
-      audio.onloadedmetadata = () => {
-        setAudioFile((prev) => ({ ...prev, duration: audio.duration }));
-        setEndTime(audio.duration);
-      };
-    },
-  });
+    const audio = new Audio(url);
+    audio.onloadedmetadata = () => {
+      setAudioFile((prev) => ({ ...prev, duration: audio.duration }));
+      setEndTime(audio.duration);
+    };
 
-  // 音频裁剪处理
+    return false; // 阻止默认上传行为
+  };
+
+  // 音频裁剪处理（之前的代码保持不变）
   const handleCrop = async () => {
     if (!audioFile.file || !ffmpegRef.current || !isFFmpegLoaded) {
-      alert('FFmpeg未完全加载或未选择文件');
+      message.error('FFmpeg未完全加载或未选择文件');
       return;
     }
 
@@ -106,14 +117,10 @@ const AudioCropper: React.FC<AudioCropperProps> = ({
 
     try {
       const ffmpeg = ffmpegRef.current;
-
-      // 转换文件为 ArrayBuffer
       const fileBuffer = await audioFile.file.arrayBuffer();
 
-      // 写入文件
       await ffmpeg.writeFile('input.mp3', new Uint8Array(fileBuffer));
 
-      // 执行裁剪命令
       await ffmpeg.exec([
         '-i',
         'input.mp3',
@@ -126,22 +133,21 @@ const AudioCropper: React.FC<AudioCropperProps> = ({
         'output.mp3',
       ]);
 
-      // 检查文件是否存在
       const fileExists = await ffmpeg.readFile('output.mp3').catch(() => null);
 
       if (!fileExists) {
         throw new Error('裁剪后的文件未生成');
       }
 
-      // 读取裁剪后的文件
       const data = await ffmpeg.readFile('output.mp3');
       const blob = new Blob([data.buffer], { type: 'audio/mp3' });
       const url = URL.createObjectURL(blob);
 
       setCroppedAudioUrl(url);
+      message.success('音频裁剪成功');
     } catch (error) {
       console.error('裁剪失败', error);
-      alert(
+      message.error(
         `音频裁剪出现错误: ${error instanceof Error ? error.message : '未知错误'}`,
       );
     } finally {
@@ -160,77 +166,80 @@ const AudioCropper: React.FC<AudioCropperProps> = ({
   };
 
   return (
-    <div className="audio-cropper">
-      <div
-        {...getRootProps()}
-        className="drop-zone"
-        style={{
-          border: '2px dashed #cccccc',
-          padding: '20px',
-          textAlign: 'center',
-          cursor: 'pointer',
-        }}
+    <Card title="音频裁剪工具" style={{ width: 800, margin: '0 auto' }}>
+      <Dragger
+        name="audio"
+        accept=".mp3,.wav,.ogg,.m4a"
+        multiple={false}
+        beforeUpload={handleFileUpload}
       >
-        <input {...getInputProps()} />
-        {isDragActive ? (
-          <p>松开鼠标上传文件</p>
-        ) : (
-          <p>拖拽音频文件至此处，或点击选择文件</p>
-        )}
-      </div>
+        <p className="ant-upload-drag-icon">
+          <InboxOutlined />
+        </p>
+        <p className="ant-upload-text">点击或拖拽音频文件到此区域上传</p>
+      </Dragger>
 
       {audioFile.file && (
-        <div className="audio-controls">
-          <audio
-            ref={audioRef}
-            src={audioFile.url}
-            controls
-            style={{ width: '100%' }}
-          />
+        <Card style={{ marginTop: 16 }}>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Title level={5}>音频预览</Title>
+            <audio
+              ref={audioRef}
+              src={audioFile.url}
+              controls
+              style={{ width: '100%' }}
+            />
 
-          <div className="time-controls">
-            <div>
-              <label>开始时间(秒):</label>
-              <input
-                type="number"
-                value={startTime}
-                min={0}
-                max={endTime}
-                onChange={(e) => setStartTime(Number(e.target.value))}
-              />
-            </div>
+            <Row gutter={16}>
+              <Col span={12}>
+                <Text>开始时间（秒）</Text>
+                <Slider
+                  min={0}
+                  max={endTime}
+                  value={startTime}
+                  onChange={(value) => setStartTime(value)}
+                />
+              </Col>
+              <Col span={12}>
+                <Text>结束时间（秒）</Text>
+                <Slider
+                  min={startTime}
+                  max={audioFile.duration}
+                  value={endTime}
+                  onChange={(value) => setEndTime(value)}
+                />
+              </Col>
+            </Row>
 
-            <div>
-              <label>结束时间(秒):</label>
-              <input
-                type="number"
-                value={endTime}
-                min={startTime}
-                max={audioFile.duration}
-                onChange={(e) => setEndTime(Number(e.target.value))}
-              />
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={handleCrop}
-            disabled={isProcessing || !isFFmpegLoaded}
-          >
-            {isProcessing ? '处理中...' : '裁剪音频'}
-          </button>
-        </div>
+            <Button
+              type="primary"
+              icon={<AudioOutlined />}
+              onClick={handleCrop}
+              loading={isProcessing}
+              disabled={!isFFmpegLoaded}
+            >
+              裁剪音频
+            </Button>
+          </Space>
+        </Card>
       )}
 
       {croppedAudioUrl && (
-        <div className="cropped-audio-preview">
-          <audio src={croppedAudioUrl} controls style={{ width: '100%' }} />
-          <button type="button" onClick={downloadCroppedAudio}>
-            下载裁剪后的音频
-          </button>
-        </div>
+        <Card style={{ marginTop: 16 }}>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Title level={5}>裁剪结果</Title>
+            <audio src={croppedAudioUrl} controls style={{ width: '100%' }} />
+            <Button
+              type="default"
+              icon={<DownloadOutlined />}
+              onClick={downloadCroppedAudio}
+            >
+              下载裁剪后的音频
+            </Button>
+          </Space>
+        </Card>
       )}
-    </div>
+    </Card>
   );
 };
 
