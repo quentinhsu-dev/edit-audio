@@ -43,16 +43,20 @@ const AudioCropper: React.FC<AudioCropperProps> = ({
     duration: 0,
     url: '',
   });
-  const [startTime, setStartTime] = useState<number>(0);
-  const [endTime, setEndTime] = useState<number>(0);
+  const [originalAudioFile, setOriginalAudioFile] = useState<AudioFileState>({
+    file: null,
+    duration: 0,
+    url: '',
+  });
+  const [range, setRange] = useState<number[]>([0, 9]);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [croppedAudioUrl, setCroppedAudioUrl] = useState<string>('');
   const [isFFmpegLoaded, setIsFFmpegLoaded] = useState<boolean>(false);
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
   const waveSurferRef = useRef<WaveSurfer | null>(null);
+  const regionsPluginRef = useRef<RegionsPlugin | null>(null);
 
-  // 初始化 FFmpeg
   useEffect(() => {
     const loadFFmpeg = async () => {
       try {
@@ -81,65 +85,60 @@ const AudioCropper: React.FC<AudioCropperProps> = ({
     loadFFmpeg();
   }, []);
 
-  // 初始化 WaveSurfer
   useEffect(() => {
-    if (audioFile.url) {
-      // 销毁之前的实例
+    if (originalAudioFile.url) {
       if (waveSurferRef.current) {
         waveSurferRef.current.destroy();
       }
 
-      const regionsPlugin = RegionsPlugin.create();
-      regionsPlugin.on('region-updated', (region) => {
-        console.log('Updated region', region);
-        setStartTime(preserveDecimals(region.start));
-        setEndTime(preserveDecimals(region.end));
+      // Create regions plugin
+      regionsPluginRef.current = RegionsPlugin.create();
+      regionsPluginRef.current.on('region-updated', (region) => {
+        setRange([
+          preserveDecimals(region.start),
+          preserveDecimals(region.end),
+        ]);
       });
-      // 创建新的 WaveSurfer 实例并加载 regions 插件
+
       const waveSurfer = WaveSurfer.create({
         container: '#waveform',
         waveColor: '#d9dcff',
         progressColor: '#4a90e2',
         cursorColor: '#ff0000',
+        cursorWidth: 0,
         height: 100,
         barWidth: 2,
-        // responsive: true,
-        plugins: [regionsPlugin],
+        plugins: [regionsPluginRef.current],
+        interact: false,
       });
 
-      waveSurfer.load(audioFile.url);
+      waveSurfer.load(originalAudioFile.url);
 
       waveSurfer.on('ready', () => {
         const duration = waveSurfer.getDuration();
-        // setAudioFile((prev) => ({ ...prev, duration }));
-        setEndTime(preserveDecimals(duration));
+        setRange([0, duration]);
+        setAudioFile((prev) => ({ ...prev, duration }));
+        setOriginalAudioFile((prev) => ({ ...prev, duration }));
       });
 
-      // 监听 Region 更新
-      // waveSurfer.on('region-update-end', (region) => {
-      //   setStartTime(region.start);
-      //   setEndTime(region.end);
-      // });
-      const random = (min: number, max: number) =>
-        Math.random() * (max - min) + min;
-      const randomColor = () =>
-        `rgba(${random(0, 255)}, ${random(0, 255)}, ${random(0, 255)}, 0.5)`;
       waveSurfer.on('decode', () => {
-        regionsPlugin.addRegion({
-          start: 0,
-          end: 8,
-          content: 'Resize or drag me!',
-          color: randomColor(),
-          drag: true,
-          resize: true,
-        });
+        if (regionsPluginRef.current) {
+          regionsPluginRef.current.addRegion({
+            id: 'region',
+            start: 0,
+            end: waveSurfer.getDuration(),
+            content: 'Resize or drag me!',
+            color: `rgba(${Math.random() * 255}, ${Math.random() * 255}, ${Math.random() * 255}, 0.5)`,
+            drag: true,
+            resize: true,
+          });
+        }
       });
 
       waveSurferRef.current = waveSurfer;
     }
-  }, [audioFile.url]);
+  }, [originalAudioFile.url]);
 
-  // 文件上传处理
   const handleFileUpload = (file: RcFile) => {
     if (file.size > maxFileSize) {
       message.error(`文件大小不能超过 ${maxFileSize / 1024 / 1024}MB`);
@@ -147,12 +146,12 @@ const AudioCropper: React.FC<AudioCropperProps> = ({
     }
 
     const url = URL.createObjectURL(file);
+    setOriginalAudioFile({ file, url, duration: 0 });
     setAudioFile({ file, url, duration: 0 });
 
-    return false; // 阻止默认上传行为
+    return false;
   };
 
-  // 音频裁剪处理
   const handleCrop = async () => {
     if (!audioFile.file || !ffmpegRef.current || !isFFmpegLoaded) {
       message.error('FFmpeg未完全加载或未选择文件');
@@ -171,19 +170,13 @@ const AudioCropper: React.FC<AudioCropperProps> = ({
         '-i',
         'input.mp3',
         '-ss',
-        `${startTime}`,
+        `${range[0]}`,
         '-to',
-        `${endTime}`,
+        `${range[1]}`,
         '-c',
         'copy',
         'output.mp3',
       ]);
-
-      const fileExists = await ffmpeg.readFile('output.mp3').catch(() => null);
-
-      if (!fileExists) {
-        throw new Error('裁剪后的文件未生成');
-      }
 
       const data = await ffmpeg.readFile('output.mp3');
       const blob = new Blob([data], { type: 'audio/mp3' });
@@ -193,15 +186,12 @@ const AudioCropper: React.FC<AudioCropperProps> = ({
       message.success('音频裁剪成功');
     } catch (error) {
       console.error('裁剪失败', error);
-      message.error(
-        `音频裁剪出现错误: ${error instanceof Error ? error.message : '未知错误'}`,
-      );
+      message.error('音频裁剪失败');
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // 下载裁剪后的音频
   const downloadCroppedAudio = () => {
     if (!croppedAudioUrl) return;
 
@@ -211,72 +201,49 @@ const AudioCropper: React.FC<AudioCropperProps> = ({
     link.click();
   };
 
-  // 更新 Region 的 start 和 end
-  const updateRegion = (start: number, end: number) => {
-    console.log('updateRegion', start, end);
-    const waveSurfer = waveSurferRef.current;
-    const region = waveSurfer?.regions.list['selection'];
-    if (region) {
-      region.update({ start, end });
-    }
-  };
-
   return (
     <Card title="音频裁剪工具" style={{ width: 800, textAlign: 'left' }}>
       <Upload
         name="audio"
         accept=".mp3,.wav,.ogg,.m4a"
+        maxCount={1}
         multiple={false}
         beforeUpload={handleFileUpload}
       >
         <Button icon={<UploadOutlined />}>选取文件</Button>
       </Upload>
 
-      {audioFile.file && (
+      {originalAudioFile.file && (
         <Card style={{ marginTop: 16 }}>
           <Space direction="vertical" style={{ width: '100%' }}>
-            <Title level={5}>音频波形图</Title>
             <div id="waveform" style={{ width: '100%' }} />
             <Row gutter={16}>
               <Col span={12}>
-                <Text>开始时间（秒）:{startTime}</Text>
-                {/* <Slider
-                  min={0}
-                  max={audioFile.duration}
-                  value={startTime}
-                  onChange={(value) => {
-                    setStartTime(value);
-                    updateRegion(value, endTime);
-                  }}
-                /> */}
+                <Text>开始时间（秒）:{range[0]}</Text>
               </Col>
               <Col span={12}>
-                <Text>结束时间（秒）: {endTime}</Text>
-                {/* <Slider
-                  min={startTime}
-                  max={audioFile.duration}
-                  value={endTime}
-                  onChange={(value) => {
-                    setEndTime(preserveDecimals(value));
-                    updateRegion(startTime, value);
-                  }}
-                /> */}
+                <Text>结束时间（秒）: {range[1]}</Text>
               </Col>
               <Col span={24}>
                 <Slider
-                  range={true}
-                  min={startTime}
-                  max={audioFile.duration}
-                  value={[startTime, endTime]}
-                  onChange={([start, end]) => {
-                    setStartTime(preserveDecimals(start));
-                    setEndTime(preserveDecimals(end));
-                    updateRegion(start, end);
+                  range={{ draggableTrack: true }}
+                  step={0.01}
+                  min={0}
+                  max={originalAudioFile.duration}
+                  value={range}
+                  onChange={(value: number[]) => {
+                    setRange([value[0], value[1]]);
+                    // biome-ignore lint/complexity/noForEach: <explanation>
+                    regionsPluginRef.current?.getRegions().forEach((region) => {
+                      region.setOptions({
+                        start: range[0],
+                        end: range[1],
+                      });
+                    });
                   }}
                 />
               </Col>
             </Row>
-
             <Button
               type="primary"
               icon={<AudioOutlined />}
@@ -291,9 +258,9 @@ const AudioCropper: React.FC<AudioCropperProps> = ({
       )}
 
       {croppedAudioUrl && (
-        <Card style={{ marginTop: 16 }}>
+        <Card title={'裁剪结果'} style={{ marginTop: 16 }}>
           <Space direction="vertical" style={{ width: '100%' }}>
-            <Title level={5}>裁剪结果</Title>
+            {/* biome-ignore lint/a11y/useMediaCaption: <explanation> */}
             <audio src={croppedAudioUrl} controls style={{ width: '100%' }} />
             <Button
               type="default"
